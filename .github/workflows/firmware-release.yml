@@ -33,20 +33,21 @@ jobs:
           sudo tar -xJf arm-gnu-toolchain-14.2.rel1-x86_64-arm-none-eabi.tar.xz -C /opt/arm-gnu-toolchain-14.2.rel1 --strip-components=1
           echo "/opt/arm-gnu-toolchain-14.2.rel1/bin" >> $GITHUB_PATH
 
-      - name: Build STM32H573 Firmware & Inject STM32 CRC-32 @ 0x000FFC14
+      - name: Build STM32H573 Firmware via project build.sh
         run: |
+          set -euxo pipefail
           arm-none-eabi-gcc --version
-          python3 ./scripts/ci_build_stm32.py
+          ./build.sh --release
 
       - name: Upload STM32 Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: stm32h573-firmware
           path: |
-            ./artifacts/M1_Farryan_wCRC.bin
-            ./artifacts/M1_Farryan.elf
-            ./artifacts/M1_Farryan.hex
-            ./artifacts/libm1_farryan_ext.a
+            ./artifacts/MonstaTek_M1_v0800.bin
+            ./artifacts/MonstaTek_M1_v0800.elf
+            ./artifacts/MonstaTek_M1_v0800.hex
+            ./artifacts/MonstaTek_M1_v0800_wCRC.bin
 
   build-esp32c6:
     name: Build Companion ESP32-C6 Firmware (ESP-IDF v5.3.2)
@@ -67,7 +68,7 @@ jobs:
         run: |
           mkdir -p ./artifacts/esp32_c6
           cp esp32_c6_fw/build/m1_esp32c6_coprocessor.bin ./artifacts/esp32_c6/esp32_c6_fw.bin
-          python3 -c 'import hashlib, pathlib; p = pathlib.Path("./artifacts/esp32_c6/esp32_c6_fw.bin"); pathlib.Path("./artifacts/esp32_c6/esp32_c6_fw.bin.md5").write_text(hashlib.md5(p.read_bytes()).hexdigest())'
+          python3 -c 'import hashlib, pathlib; p = pathlib.Path("./artifacts/esp32_c6/esp32_c6_fw.bin"); pathlib.Path("./artifacts/esp32_c6/esp32_c6_fw.bin.md5").write_text(hashlib.md5(p.read_bytes()).hexdigest() + "  " + p.name + "\n");'
           ls -lh ./artifacts/esp32_c6/
 
       - name: Upload ESP32-C6 Artifacts
@@ -116,10 +117,10 @@ jobs:
           name: "Monstatek M1 Farryan Custom Firmware (${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.2.0-farryan' }})"
           generate_release_notes: true
           files: |
-            ./release_bundle/M1_Farryan_wCRC.bin
-            ./release_bundle/M1_Farryan.elf
-            ./release_bundle/M1_Farryan.hex
-            ./release_bundle/libm1_farryan_ext.a
+            ./release_bundle/MonstaTek_M1_v0800.bin
+            ./release_bundle/MonstaTek_M1_v0800.elf
+            ./release_bundle/MonstaTek_M1_v0800.hex
+            ./release_bundle/MonstaTek_M1_v0800_wCRC.bin
             ./release_bundle/esp32_c6_fw.bin
             ./release_bundle/esp32_c6_fw.bin.md5
             ./release_bundle/M1_SD_Assets.zip
