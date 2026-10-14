@@ -140,14 +140,14 @@ target_include_directories(m1_01 INTERFACE
     ../../lfrfid
     ../../USB
     ../../USB/Class/CDC/Inc
-    ../../USB/Class/CDC/Scr
+    ../../USB/Class/CDC/Src
     ../../USB/Class/CompositeBuilder/Inc
     ../../USB/Class/CompositeBuilder/Src
     ../../USB/Class/MSC/Inc
     ../../USB/Class/MSC/Src
     ../../USB/Class/HID/Inc
     ../../USB/Core/Inc
-    ../../USB/Core/Scr
+    ../../USB/Core/Src
 )
 
 target_sources(m1_01 INTERFACE
