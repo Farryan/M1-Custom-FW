@@ -19,7 +19,6 @@ jobs:
       - name: Checkout Farryan/M1-Custom-FW
         uses: actions/checkout@v4
         with:
-          submodules: recursive
           fetch-depth: 0
 
       - name: Install Build Dependencies & SRecord (srec_cat)
@@ -34,50 +33,10 @@ jobs:
           sudo tar -xJf arm-gnu-toolchain-14.2.rel1-x86_64-arm-none-eabi.tar.xz -C /opt/arm-gnu-toolchain-14.2.rel1 --strip-components=1
           echo "/opt/arm-gnu-toolchain-14.2.rel1/bin" >> $GITHUB_PATH
 
-      - name: Auto-Register Custom C Modules in Root CMakeLists.txt
-        run: |
-          if ! grep -q "m1_subghz_presets_and_protocols.c" CMakeLists.txt; then
-            cat << 'CMAKE_EOF' >> CMakeLists.txt
-
-          # Farryan Custom Firmware Extensions (Phases 2-5)
-          target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
-              ${CMAKE_CURRENT_SOURCE_DIR}/Sub_Ghz
-              ${CMAKE_CURRENT_SOURCE_DIR}/MultiProto_Parsers
-              ${CMAKE_CURRENT_SOURCE_DIR}/Esp_spi_at
-              ${CMAKE_CURRENT_SOURCE_DIR}/m1_csrc
-          )
-          target_sources(${CMAKE_PROJECT_NAME} PRIVATE
-              ${CMAKE_CURRENT_SOURCE_DIR}/Sub_Ghz/m1_subghz_presets_and_protocols.c
-              ${CMAKE_CURRENT_SOURCE_DIR}/MultiProto_Parsers/m1_multiprotocol_parsers.c
-              ${CMAKE_CURRENT_SOURCE_DIR}/Esp_spi_at/m1_esp_spi_protocol.c
-              ${CMAKE_CURRENT_SOURCE_DIR}/m1_csrc/m1_farryan_ui_ext.c
-          )
-          CMAKE_EOF
-          fi
-
-      - name: Configure & Build STM32H573 Firmware
+      - name: Build STM32H573 Firmware & Inject STM32 CRC-32 @ 0x000FFC14
         run: |
           arm-none-eabi-gcc --version
-          cmake --preset gcc-14_2_build-release
-          cmake --build --preset gcc-14_2_build-release --parallel $(nproc)
-
-      - name: Sign Binary with STM32 Hardware CRC-32 @ 0x000FFC14
-        run: |
-          mkdir -p ./artifacts
-          RAW_BIN=$(find ./out ./build ./artifacts -name "*.bin" ! -name "*wCRC*" | head -n 1)
-          ELF_FILE=$(find ./out ./build ./artifacts -name "*.elf" | head -n 1)
-          HEX_FILE=$(find ./out ./build ./artifacts -name "*.hex" | head -n 1)
-          cp "${ELF_FILE}" ./artifacts/M1_Farryan.elf
-          cp "${HEX_FILE}" ./artifacts/M1_Farryan.hex
-          srec_cat "${RAW_BIN}" -binary \
-            -crop 0x0 0x000FFC14 \
-            -fill 0xFF 0x00000000 0x000FFC14 \
-            -STM32_Little_Endian 0x000FFC14 \
-            -o ./artifacts/M1_Farryan_wCRC.bin -binary
-          # Cross-check with Python STM32 CRC-32 verifier
-          python3 ./scripts/m1_crc32.py "${RAW_BIN}" -o ./artifacts/M1_Farryan_wCRC_py.bin
-          cmp -s ./artifacts/M1_Farryan_wCRC.bin ./artifacts/M1_Farryan_wCRC_py.bin
-          rm -f ./artifacts/M1_Farryan_wCRC_py.bin
+          python3 ./scripts/ci_build_stm32.py
 
       - name: Upload STM32 Artifacts
         uses: actions/upload-artifact@v4
@@ -87,6 +46,7 @@ jobs:
             ./artifacts/M1_Farryan_wCRC.bin
             ./artifacts/M1_Farryan.elf
             ./artifacts/M1_Farryan.hex
+            ./artifacts/libm1_farryan_ext.a
 
   build-esp32c6:
     name: Build Companion ESP32-C6 Firmware (ESP-IDF v5.3.2)
@@ -94,20 +54,21 @@ jobs:
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
 
-      - name: Build ESP32-C6 Coprocessor Binary + MD5 Sidecar
+      - name: Compile ESP32-C6 Coprocessor Firmware
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: v5.3.2
           target: esp32c6
           path: esp32_c6_fw
-          command: |
-            idf.py build
-            mkdir -p ../artifacts/esp32_c6
-            cp build/m1_esp32c6_coprocessor.bin ../artifacts/esp32_c6/esp32_c6_fw.bin
-            md5sum ../artifacts/esp32_c6/esp32_c6_fw.bin | awk '{ printf "%s", $1 }' > ../artifacts/esp32_c6/esp32_c6_fw.bin.md5
+          command: idf.py build
+
+      - name: Package esp32_c6_fw.bin and MD5 Sidecar
+        run: |
+          mkdir -p ./artifacts/esp32_c6
+          cp esp32_c6_fw/build/m1_esp32c6_coprocessor.bin ./artifacts/esp32_c6/esp32_c6_fw.bin
+          python3 -c 'import hashlib, pathlib; p = pathlib.Path("./artifacts/esp32_c6/esp32_c6_fw.bin"); pathlib.Path("./artifacts/esp32_c6/esp32_c6_fw.bin.md5").write_text(hashlib.md5(p.read_bytes()).hexdigest())'
+          ls -lh ./artifacts/esp32_c6/
 
       - name: Upload ESP32-C6 Artifacts
         uses: actions/upload-artifact@v4
@@ -139,7 +100,7 @@ jobs:
   publish-github-release:
     name: Publish GitHub Release on Farryan/M1-Custom-FW
     needs: [ build-stm32h573, build-esp32c6, package-sd-assets ]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     steps:
       - name: Download All Built Artifacts
@@ -148,14 +109,17 @@ jobs:
           path: ./release_bundle
           merge-multiple: true
 
-      - name: Create GitHub Release
+      - name: Create or Update GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.2.0-farryan' }}
+          name: "Monstatek M1 Farryan Custom Firmware (${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'v1.2.0-farryan' }})"
           generate_release_notes: true
           files: |
             ./release_bundle/M1_Farryan_wCRC.bin
             ./release_bundle/M1_Farryan.elf
             ./release_bundle/M1_Farryan.hex
+            ./release_bundle/libm1_farryan_ext.a
             ./release_bundle/esp32_c6_fw.bin
             ./release_bundle/esp32_c6_fw.bin.md5
             ./release_bundle/M1_SD_Assets.zip
