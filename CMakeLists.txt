@@ -58,9 +58,10 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined library search paths
 )
 
-# Add sources to executable
+# Add sources to executable: compile the generated firmware object library and
+# include its object files in the final ELF.
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user sources here
+    $<TARGET_OBJECTS:m1_01>
 )
 
 # Add include paths
@@ -73,12 +74,8 @@ target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined symbols
 )
 
-# Add linked libraries
-target_link_libraries(${CMAKE_PROJECT_NAME}
-    m1_01
-
-    # Add user defined libraries
-)
+# No direct link libraries are required here; the firmware sources are compiled
+# as objects from the m1_01 OBJECT library and linked into the final ELF below.
 
 # Specify the output ELF file
 set(TARGET_ELF "${CMAKE_BINARY_DIR}/${CMAKE_PROJECT_NAME}.elf")
