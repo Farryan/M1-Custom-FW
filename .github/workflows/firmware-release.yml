@@ -1,0 +1,161 @@
+name: Build & Publish Monstatek M1 + ESP32-C6 Release Artifacts
+
+on:
+  push:
+    branches: [ main, "feat/**" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-stm32h573:
+    name: Build STM32H573 Main Firmware (GCC 14.2.Rel1 + CRC-32)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout Farryan/M1-Custom-FW
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install Build Dependencies & SRecord (srec_cat)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build srecord python3
+
+      - name: Install Arm GNU Toolchain 14.2.Rel1
+        run: |
+          wget -q https://developer.arm.com/-/media/Files/downloads/gnu/14.2.rel1/binrel/arm-gnu-toolchain-14.2.rel1-x86_64-arm-none-eabi.tar.xz
+          sudo mkdir -p /opt/arm-gnu-toolchain-14.2.rel1
+          sudo tar -xJf arm-gnu-toolchain-14.2.rel1-x86_64-arm-none-eabi.tar.xz -C /opt/arm-gnu-toolchain-14.2.rel1 --strip-components=1
+          echo "/opt/arm-gnu-toolchain-14.2.rel1/bin" >> $GITHUB_PATH
+
+      - name: Auto-Register Custom C Modules in Root CMakeLists.txt
+        run: |
+          if ! grep -q "m1_subghz_presets_and_protocols.c" CMakeLists.txt; then
+            cat << 'CMAKE_EOF' >> CMakeLists.txt
+
+          # Farryan Custom Firmware Extensions (Phases 2-5)
+          target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
+              ${CMAKE_CURRENT_SOURCE_DIR}/Sub_Ghz
+              ${CMAKE_CURRENT_SOURCE_DIR}/MultiProto_Parsers
+              ${CMAKE_CURRENT_SOURCE_DIR}/Esp_spi_at
+              ${CMAKE_CURRENT_SOURCE_DIR}/m1_csrc
+          )
+          target_sources(${CMAKE_PROJECT_NAME} PRIVATE
+              ${CMAKE_CURRENT_SOURCE_DIR}/Sub_Ghz/m1_subghz_presets_and_protocols.c
+              ${CMAKE_CURRENT_SOURCE_DIR}/MultiProto_Parsers/m1_multiprotocol_parsers.c
+              ${CMAKE_CURRENT_SOURCE_DIR}/Esp_spi_at/m1_esp_spi_protocol.c
+              ${CMAKE_CURRENT_SOURCE_DIR}/m1_csrc/m1_farryan_ui_ext.c
+          )
+          CMAKE_EOF
+          fi
+
+      - name: Configure & Build STM32H573 Firmware
+        run: |
+          arm-none-eabi-gcc --version
+          cmake --preset gcc-14_2_build-release
+          cmake --build --preset gcc-14_2_build-release --parallel $(nproc)
+
+      - name: Sign Binary with STM32 Hardware CRC-32 @ 0x000FFC14
+        run: |
+          mkdir -p ./artifacts
+          RAW_BIN=$(find ./out ./build ./artifacts -name "*.bin" ! -name "*wCRC*" | head -n 1)
+          ELF_FILE=$(find ./out ./build ./artifacts -name "*.elf" | head -n 1)
+          HEX_FILE=$(find ./out ./build ./artifacts -name "*.hex" | head -n 1)
+          cp "${ELF_FILE}" ./artifacts/M1_Farryan.elf
+          cp "${HEX_FILE}" ./artifacts/M1_Farryan.hex
+          srec_cat "${RAW_BIN}" -binary \
+            -crop 0x0 0x000FFC14 \
+            -fill 0xFF 0x00000000 0x000FFC14 \
+            -STM32_Little_Endian 0x000FFC14 \
+            -o ./artifacts/M1_Farryan_wCRC.bin -binary
+          # Cross-check with Python STM32 CRC-32 verifier
+          python3 ./scripts/m1_crc32.py "${RAW_BIN}" -o ./artifacts/M1_Farryan_wCRC_py.bin
+          cmp -s ./artifacts/M1_Farryan_wCRC.bin ./artifacts/M1_Farryan_wCRC_py.bin
+          rm -f ./artifacts/M1_Farryan_wCRC_py.bin
+
+      - name: Upload STM32 Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: stm32h573-firmware
+          path: |
+            ./artifacts/M1_Farryan_wCRC.bin
+            ./artifacts/M1_Farryan.elf
+            ./artifacts/M1_Farryan.hex
+
+  build-esp32c6:
+    name: Build Companion ESP32-C6 Firmware (ESP-IDF v5.3.2)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Build ESP32-C6 Coprocessor Binary + MD5 Sidecar
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.3.2
+          target: esp32c6
+          path: esp32_c6_fw
+          command: |
+            idf.py build
+            mkdir -p ../artifacts/esp32_c6
+            cp build/m1_esp32c6_coprocessor.bin ../artifacts/esp32_c6/esp32_c6_fw.bin
+            md5sum ../artifacts/esp32_c6/esp32_c6_fw.bin | awk '{ printf "%s", $1 }' > ../artifacts/esp32_c6/esp32_c6_fw.bin.md5
+
+      - name: Upload ESP32-C6 Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: esp32c6-firmware
+          path: |
+            ./artifacts/esp32_c6/esp32_c6_fw.bin
+            ./artifacts/esp32_c6/esp32_c6_fw.bin.md5
+
+  package-sd-assets:
+    name: Build UberGuidoZ M1 SD Asset Archive
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Clone UberGuidoZ/Flipper & Convert Assets
+        run: |
+          git clone --depth 1 https://github.com/UberGuidoZ/Flipper.git /tmp/UberGuidoZ-Flipper
+          mkdir -p ./artifacts
+          python3 ./scripts/sync_uberguidoz.py --source /tmp/UberGuidoZ-Flipper -o ./artifacts/M1_SD_Assets.zip
+
+      - name: Upload SD Card Bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: m1-sd-assets
+          path: ./artifacts/M1_SD_Assets.zip
+
+  publish-github-release:
+    name: Publish GitHub Release on Farryan/M1-Custom-FW
+    needs: [ build-stm32h573, build-esp32c6, package-sd-assets ]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download All Built Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./release_bundle
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            ./release_bundle/M1_Farryan_wCRC.bin
+            ./release_bundle/M1_Farryan.elf
+            ./release_bundle/M1_Farryan.hex
+            ./release_bundle/esp32_c6_fw.bin
+            ./release_bundle/esp32_c6_fw.bin.md5
+            ./release_bundle/M1_SD_Assets.zip
